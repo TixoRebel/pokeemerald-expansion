@@ -15,6 +15,7 @@ struct Dma3Request
     u16 size;
     u16 mode;
     u32 value;
+    bool8 compressed;
 };
 
 static struct Dma3Request sDma3Requests[MAX_DMA_REQUESTS];
@@ -34,10 +35,13 @@ void ClearDma3Requests(void)
         sDma3Requests[i].size = 0;
         sDma3Requests[i].src = NULL;
         sDma3Requests[i].dest = NULL;
+        sDma3Requests[i].compressed = FALSE;
     }
 
     sDma3ManagerLocked = FALSE;
 }
+
+extern void SmolFrameUncomp(const u8 *src, u8 *dst, u32 frame);
 
 void ProcessDma3Requests(void)
 {
@@ -49,7 +53,7 @@ void ProcessDma3Requests(void)
     bytesTransferred = 0;
 
     // as long as there are DMA requests to process (unless size or vblank is an issue), do not exit
-    while (sDma3Requests[sDma3RequestCursor].size != 0)
+    while (sDma3Requests[sDma3RequestCursor].dest != NULL)
     {
         bytesTransferred += sDma3Requests[sDma3RequestCursor].size;
 
@@ -61,9 +65,14 @@ void ProcessDma3Requests(void)
         switch (sDma3Requests[sDma3RequestCursor].mode)
         {
         case DMA_REQUEST_COPY32: // regular 32-bit copy
-            Dma3CopyLarge32_(sDma3Requests[sDma3RequestCursor].src,
-                             sDma3Requests[sDma3RequestCursor].dest,
-                             sDma3Requests[sDma3RequestCursor].size);
+            if (sDma3Requests[sDma3RequestCursor].compressed)
+                SmolFrameUncomp(sDma3Requests[sDma3RequestCursor].src,
+                                sDma3Requests[sDma3RequestCursor].dest,
+                                sDma3Requests[sDma3RequestCursor].size);
+            else
+                Dma3CopyLarge32_(sDma3Requests[sDma3RequestCursor].src,
+                                 sDma3Requests[sDma3RequestCursor].dest,
+                                 sDma3Requests[sDma3RequestCursor].size);
             break;
         case DMA_REQUEST_FILL32: // repeat a single 32-bit value across RAM
             Dma3FillLarge32_(sDma3Requests[sDma3RequestCursor].value,
@@ -71,9 +80,14 @@ void ProcessDma3Requests(void)
                              sDma3Requests[sDma3RequestCursor].size);
             break;
         case DMA_REQUEST_COPY16:    // regular 16-bit copy
-            Dma3CopyLarge16_(sDma3Requests[sDma3RequestCursor].src,
-                             sDma3Requests[sDma3RequestCursor].dest,
-                             sDma3Requests[sDma3RequestCursor].size);
+            if (sDma3Requests[sDma3RequestCursor].compressed)
+                SmolFrameUncomp(sDma3Requests[sDma3RequestCursor].src,
+                                sDma3Requests[sDma3RequestCursor].dest,
+                                sDma3Requests[sDma3RequestCursor].size);
+            else
+                Dma3CopyLarge16_(sDma3Requests[sDma3RequestCursor].src,
+                                 sDma3Requests[sDma3RequestCursor].dest,
+                                 sDma3Requests[sDma3RequestCursor].size);
             break;
         case DMA_REQUEST_FILL16: // repeat a single 16-bit value across RAM
             Dma3FillLarge16_(sDma3Requests[sDma3RequestCursor].value,
@@ -88,12 +102,18 @@ void ProcessDma3Requests(void)
         sDma3Requests[sDma3RequestCursor].size = 0;
         sDma3Requests[sDma3RequestCursor].mode = 0;
         sDma3Requests[sDma3RequestCursor].value = 0;
+        sDma3Requests[sDma3RequestCursor].compressed = FALSE;
 
         sDma3RequestCursor = INCREMENT_OR_WRAP(sDma3RequestCursor, MAX_DMA_REQUESTS); // loop back to the first DMA request
     }
 }
 
 s16 RequestDma3Copy(const void *src, void *dest, u16 size, u32 mode)
+{
+    return RequestDma3CopyComp(src, dest, size, mode, FALSE);
+}
+
+s16 RequestDma3CopyComp(const void *src, void *dest, u16 size, u32 mode, bool8 compressed)
 {
     int cursor;
     int i = 0;
@@ -103,11 +123,12 @@ s16 RequestDma3Copy(const void *src, void *dest, u16 size, u32 mode)
 
     while (i < MAX_DMA_REQUESTS)
     {
-        if (sDma3Requests[cursor].size == 0) // an empty request was found.
+        if (sDma3Requests[cursor].dest == NULL) // an empty request was found.
         {
             sDma3Requests[cursor].src = src;
             sDma3Requests[cursor].dest = dest;
             sDma3Requests[cursor].size = size;
+            sDma3Requests[cursor].compressed = compressed;
 
             if (mode == 1)
                 sDma3Requests[cursor].mode = DMA_REQUEST_COPY32;
@@ -135,7 +156,7 @@ s16 RequestDma3Fill(s32 value, void *dest, u16 size, u32 mode)
 
     while (i < MAX_DMA_REQUESTS)
     {
-        if (sDma3Requests[cursor].size == 0) // an empty request was found.
+        if (sDma3Requests[cursor].dest == NULL) // an empty request was found.
         {
             sDma3Requests[cursor].dest = dest;
             sDma3Requests[cursor].size = size;
@@ -166,7 +187,7 @@ s16 CheckForSpaceForDma3Request(s16 index)
     {
         while (i < MAX_DMA_REQUESTS)
         {
-            if (sDma3Requests[i].size != 0)
+            if (sDma3Requests[i].dest != NULL)
                 return -1;
             i++;
         }
@@ -174,7 +195,7 @@ s16 CheckForSpaceForDma3Request(s16 index)
     }
     else  // check the specified request
     {
-        if (sDma3Requests[index].size != 0)
+        if (sDma3Requests[index].dest != NULL)
             return -1;
         return 0;
     }
